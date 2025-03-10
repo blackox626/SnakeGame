@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, input, Input, EventKeyboard, KeyCode, Collider2D, Contact2DType, IPhysics2DContact, UITransform, BoxCollider2D, Sprite, SpriteFrame } from 'cc';
+import { _decorator, Component, Node, Vec3, input, Input, EventKeyboard, KeyCode, Collider2D, Contact2DType, IPhysics2DContact, UITransform, BoxCollider2D, Sprite, SpriteFrame, director } from 'cc';
 import { GameManager } from './GameManager';
 const { ccclass, property } = _decorator;
 
@@ -8,7 +8,7 @@ export class Snake extends Component {
     bodySprite: SpriteFrame | null = null;
 
     @property
-    moveSpeed: number = 200;
+    moveSpeed: number = 800;
 
     @property
     bodySpacing: number = 40;
@@ -38,6 +38,9 @@ export class Snake extends Component {
     private setupCollision() {
         const collider = this.getComponent(Collider2D);
         if (collider) {
+            collider.group = 1;
+            // 使用 contact.enabled 替代 maskBits 来启用碰撞
+            collider.enabled = true;
             collider.on(Contact2DType.BEGIN_CONTACT, this.onCollision, this);
         }
     }
@@ -68,12 +71,26 @@ export class Snake extends Component {
     }
 
     private onCollision(selfCollider: Collider2D, otherCollider: Collider2D, contact: IPhysics2DContact | null) {
+        console.log('碰撞检测:', otherCollider.node.name);
+        
         if (otherCollider.node.name === 'Food') {
-            // otherCollider.node.destroy();
-            this.grow();
-            this.gameManager?.addScore();
-        } else if (otherCollider.node.name === 'SnakeBody' || this.isOutOfBounds()) {
-            this.gameManager?.gameOver();
+            // 使用 scheduleOnce 延迟处理碰撞逻辑
+            this.scheduleOnce(() => {
+                this.grow();
+                this.gameManager?.addScore();
+            }, 0);
+        } else if (otherCollider.node.name === 'SnakeBody') {
+            console.log('蛇头碰到蛇身，游戏结束!');
+            // 使用 scheduleOnce 延迟处理游戏结束逻辑
+            this.scheduleOnce(() => {
+                this.gameManager?.gameOver();
+            }, 0);
+        } else if (this.isOutOfBounds()) {
+            console.log('蛇头超出边界，游戏结束!');
+            // 使用 scheduleOnce 延迟处理游戏结束逻辑
+            this.scheduleOnce(() => {
+                this.gameManager?.gameOver();
+            }, 0);
         }
     }
 
@@ -90,20 +107,38 @@ export class Snake extends Component {
         // 更新位置历史
         this.positions.unshift(newPos.clone());
         
-        // 确保蛇身之间保持固定间距
-        for (let i = 1; i < this.positions.length; i++) {
-            const currentPos = this.positions[i-1];
-            const direction = currentPos.clone().subtract(this.positions[i]).normalize();
-            this.positions[i] = currentPos.clone().subtract(direction.multiplyScalar(this.bodySpacing));
-        }
-
-        if (this.positions.length > this.bodyNodes.length) {
+        // 移除多余的历史位置
+        if (this.positions.length > this.bodyNodes.length * 10) { // 保留足够多的历史位置
             this.positions.pop();
         }
 
-        // 更新蛇身位置
+        // 更新蛇身位置 - 每个节点跟随路径上的点，保持固定间距
+        let totalDistance = 0;
         for (let i = 1; i < this.bodyNodes.length; i++) {
-            this.bodyNodes[i].setPosition(this.positions[i]);
+            // 计算当前节点应该在的位置
+            totalDistance += this.bodySpacing;
+            
+            // 沿着历史路径找到合适的位置
+            let targetPos = this.positions[0].clone();
+            let currentDistance = 0;
+            
+            for (let j = 0; j < this.positions.length - 1; j++) {
+                const segmentVector = this.positions[j+1].clone().subtract(this.positions[j]);
+                const segmentLength = segmentVector.length();
+                
+                if (currentDistance + segmentLength >= totalDistance) {
+                    // 找到了合适的位置
+                    const remainingDistance = totalDistance - currentDistance;
+                    const ratio = remainingDistance / segmentLength;
+                    targetPos = this.positions[j].clone().lerp(this.positions[j+1], ratio);
+                    break;
+                }
+                
+                currentDistance += segmentLength;
+            }
+            
+            // 设置蛇身位置
+            this.bodyNodes[i].setPosition(targetPos);
         }
     }
 
@@ -122,9 +157,11 @@ export class Snake extends Component {
 
         // 添加碰撞体组件
         const collider = newBody.addComponent(BoxCollider2D);
-        collider.group = 1;
         collider.enabled = true;
-
+        collider.sensor = true;
+        collider.group = 1;
+        collider.friction = 0;
+        
         // 添加 Sprite 组件来显示蛇身
         const sprite = newBody.addComponent(Sprite);
         sprite.spriteFrame = this.bodySprite;
